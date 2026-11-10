@@ -213,7 +213,7 @@ div.stDownloadButton > button:disabled {
     height: auto;
     max-height: none;
     object-fit: contain;
-    margin-top: 15PX;
+    margin-top: 25PX;
 }
 
 .st-key-auth-shell h1 {
@@ -492,7 +492,7 @@ div.stDownloadButton > button:disabled {
 }
 
 .st-key-workflow-wizard {
-    margin: 0.25rem 0 0.85rem;
+    margin: 0 0 0.85rem;
     border: 1px solid var(--ss-line);
     border-radius: 14px;
     background: rgba(255, 255, 255, 0.94);
@@ -571,7 +571,7 @@ div.stDownloadButton > button:disabled {
 
 .st-key-chat-header {
     padding: 0.8rem 1rem;
-    margin-bottom: 0.8rem;
+    margin-bottom: 0;
     border: 1px solid var(--ss-line);
     border-radius: 16px;
     background: var(--ss-surface);

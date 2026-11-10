@@ -1769,7 +1769,7 @@ def _render_consent_page() -> None:
         with st.container(border=True, key="consent-shell"):
             _render_signed_in_account()
             st.markdown(":material/verified_user: PRIVACY & CONSENT")
-            st.title("Your information. Your choice.")
+            st.subheader("Your information. Your choice.")
             st.write(
                 "Please review how information is used before continuing to "
                 "your scheme search."
