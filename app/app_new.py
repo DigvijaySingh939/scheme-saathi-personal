@@ -1908,7 +1908,7 @@ def _render_chat_header() -> None:
                 [1.4, 1.6, 1.4], gap="medium", vertical_alignment="center"
             )
             with image_col:
-                _render_brand_image()
+                _render_brand_image(width="stretch")
             with title_col:
                 st.markdown("#### Scheme Saathi")
                 st.caption("Your guide to government schemes")
