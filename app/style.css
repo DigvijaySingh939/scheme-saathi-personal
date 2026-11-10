@@ -276,6 +276,20 @@ div.stDownloadButton > button:disabled {
     letter-spacing: 0.1em;
 }
 
+.st-key-consent-header .st-key-page-brand {
+    width: 100%;
+    max-width: 313px;
+}
+
+.st-key-consent-header .st-key-page-brand img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    object-fit: contain;
+    margin-top: 15px;
+}
+
 .st-key-consent-shell {
     border-color: var(--ss-line);
     border-radius: 18px;
