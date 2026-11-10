@@ -351,11 +351,34 @@ div.stDownloadButton > button:disabled {
     min-height: 3rem;
 }
 
-.st-key-consent-shell [data-testid="stButton"] button {
+.st-key-consent-shell [data-testid="stButton"] button,
+.st-key-consent-shell [data-testid="stButton"] button * {
     color: var(--ss-muted) !important;
     -webkit-text-fill-color: var(--ss-muted) !important;
     background: transparent !important;
     border-color: transparent !important;
+}
+
+.st-key-consent-shell .st-key-decline-consent button {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    background: var(--ss-blue) !important;
+    border-color: var(--ss-blue) !important;
+}
+
+.st-key-consent-shell .st-key-decline-consent button:hover {
+    background: var(--ss-blue-hover) !important;
+    border-color: var(--ss-blue-hover) !important;
+}
+
+.st-key-consent-shell .st-key-decline-consent button:focus-visible {
+    outline: 3px solid #8cc4a5 !important;
+    outline-offset: 2px;
+}
+
+.st-key-consent-shell .st-key-decline-consent button * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
 .st-key-welcome-page {

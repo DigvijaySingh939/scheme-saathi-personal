@@ -1809,6 +1809,7 @@ def _render_consent_page() -> None:
                 "I do not agree — return to sign in",
                 key="decline-consent",
                 on_click=_decline_consent,
+                type="primary",
                 width="stretch",
             )
 
