@@ -1120,3 +1120,4 @@ def create_api(service: DemoService | None = None) -> FastAPI:
 
 
 app = create_api()
+
