@@ -1,0 +1,36 @@
+{
+  "scheme_id": "M18",
+  "name": "Training Of Motor Driving To VJNT, SBS & OBC",
+  "level": "state",
+  "state": "Maharashtra",
+  "source": {
+    "url": "https://www.myscheme.gov.in/schemes/tmdvso",
+    "collected_on": "2026-10-28"
+  },
+  "clauses": [
+    {
+      "clause_id": "elig-1",
+      "text": "Applicant should belong to VJNT, OBC or SBC Category."
+    },
+    {
+      "clause_id": "elig-2",
+      "text": "Applicant should fulfil all the conditions of Age, Education, and fitness as per the Motor Vehicle Act."
+    }
+  ],
+  "documents_required": [
+    "Aadhaar Number.",
+    "Proof of Identity.",
+    "Proof of Age (Birth Certificate).",
+    "Proof of Address.",
+    "Domicile Certificate of Maharashtra.",
+    "Caste Certificate VJNT or SBC Community (duly signed by an authorized Revenue Officer, not below the rank of Tehsildar).",
+    "Marksheet of the Latest Educational Qualification.",
+    "Bank Account Details.",
+    "Passport-sized Photograph."
+  ],
+  "rules": [
+    {"field": "social_category", "op": "in", "value": ["VJ-A", "NT-B", "NT-C", "NT-D", "OBC", "SBC"], "clause_id": "elig-1", "status": "reviewed"},
+    {"field": "age", "op": "gte", "value": 18, "clause_id": "elig-2", "status": "reviewed"},
+    {"field": "is_medically_fit_to_drive", "op": "eq", "value": true, "clause_id": "elig-2", "status": "reviewed"}
+  ]
+}

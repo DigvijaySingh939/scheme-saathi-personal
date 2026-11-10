@@ -1,0 +1,11 @@
+{
+  "created_on": "2026-11-02",
+  "git_commit": "9f287c9a6b9faa4730b9487dbbc8eb712399275b",
+  "model": "BAAI/bge-m3",
+  "chromadb_version": "1.5.9",
+  "collections": {
+    "schemes_bge_m3_body_v1": 400,
+    "scheme_pdf_review_v1": 0
+  },
+  "schemes": 58
+}
