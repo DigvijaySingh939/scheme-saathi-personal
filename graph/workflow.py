@@ -1,6 +1,7 @@
 import hashlib
 import json
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -20,6 +21,9 @@ class GraphState(TypedDict, total=False):
     actor_id: str
     scheme_ids: list[str]
     include_draft: bool
+    # "planned" (default): ask the field that settles the most open verdicts. "fixed": ask the
+    # candidate schemes' fields in their fixed form order (experiment E4's questionnaire baseline).
+    question_order: str
     profile: dict[str, Any]
     questions_asked: int
     last_asked: str  # the field intake just filled; only verdicts waiting on it can change
@@ -53,8 +57,14 @@ def plan_node(state: GraphState) -> dict[str, Any]:
 
 
 def _next_field(state: GraphState) -> str | None:
-    """The field that settles the most open verdicts; fields already asked are skipped."""
-    return tools.next_question(state["verdicts"], declined=list(state["profile"]))
+    """The field that settles the most open verdicts; fields already asked are skipped.
+
+    With a fixed questionnaire the next field is simply the next unasked one in form order;
+    both orders stop once no answer can settle an open verdict, so only the order differs."""
+    planned = tools.next_question(state["verdicts"], declined=list(state["profile"]))
+    if planned is None or state.get("question_order", "planned") != "fixed":
+        return planned
+    return next(iter(unanswered(state)), None)
 
 
 def intake_node(state: GraphState) -> dict[str, Any]:
@@ -74,21 +84,25 @@ def eligibility_node(state: GraphState) -> dict[str, Any]:
         schemes = tools.search_schemes(
             state["profile"], state.get("scheme_ids"), preview
         )
-        # Answers only add facts: a decided verdict stays decided, and an open one can change
-        # only if it was waiting on the field just asked. An edit clears verdicts, forcing a full check.
-        earlier = state.get("verdicts") or {}
-        asked = state.get("last_asked")
+    # Answers only add facts: a decided verdict stays decided, and an open one can change
+    # only if it was waiting on the field just asked. An edit clears verdicts, forcing a full check.
+    earlier = state.get("verdicts") or {}
+    asked = state.get("last_asked")
 
-        def stale(scheme: str) -> bool:
-            verdict = earlier.get(scheme)
-            return verdict is None or (
-                verdict["verdict"] == "cant_tell" and asked in verdict.get("unresolved_fields", [])
-            )
+    def stale(scheme: str) -> bool:
+        verdict = earlier.get(scheme)
+        return verdict is None or (
+            verdict["verdict"] == "cant_tell" and asked in verdict.get("unresolved_fields", [])
+        )
 
-        verdicts = {
-            scheme: tools.evaluate_scheme(state["profile"], scheme, preview) if stale(scheme) else earlier[scheme]
-            for scheme in schemes
-        }
+    verdicts = {}
+    for scheme in schemes:
+        if not stale(scheme):
+            verdicts[scheme] = earlier[scheme]
+            continue
+        actor = "rule_reviewer" if preview else "eligibility"
+        with tools.acting_as(actor):
+            verdicts[scheme] = tools.evaluate_scheme(state["profile"], scheme, preview)
     return {"verdicts": verdicts}
 
 
@@ -166,6 +180,17 @@ def application_hash(application: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _well_formed(field: str, value: Any) -> bool:
+    """The rule engine reads a date only as YYYY-MM-DD; any other form would be stored and ignored."""
+    if field != "date_of_birth":
+        return True
+    try:
+        date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def approval_node(state: GraphState) -> dict[str, Any]:
     """Pause for a person. Approval counts only if it names the hash of this exact form."""
     current = application_hash(state["application"])
@@ -188,9 +213,14 @@ def approval_node(state: GraphState) -> dict[str, Any]:
         tools.audit_approval_event("approve", "invalid", authenticated)
         return {"approved": False, "approval_status": "invalid"}
     if action == "edit" and isinstance(decision.get("changes"), dict):
+        if not _valid_profile_edits(decision["changes"]):
+            tools.audit_approval_event("edit", "invalid", authenticated)
+            return {"approved": False, "approval_status": "invalid"}
         tools.audit_approval_event("edit", "accepted", authenticated)
+        # A malformed date is dropped, so the stored one stays; the other changes still apply.
+        changes = {f: v for f, v in decision["changes"].items() if _well_formed(f, v)}
         # An edit can change an answer, so earlier verdicts no longer hold.
-        return {"profile": {**state["profile"], **decision["changes"]}, "verdicts": {}, "approved": False,
+        return {"profile": {**state["profile"], **changes}, "verdicts": {}, "approved": False,
                 "approved_hash": "", "approval_status": "edited", "draft_attempts": 0}
     tools.audit_approval_event(
         "reject" if action == "reject" else "invalid",
@@ -198,6 +228,26 @@ def approval_node(state: GraphState) -> dict[str, Any]:
         authenticated,
     )
     return {"approved": False, "approval_status": "rejected" if action == "reject" else "invalid"}
+
+
+def _valid_profile_edits(changes: dict[str, Any]) -> bool:
+    with tools.acting_as("application"):
+        scheme_ids = tools.search_schemes({})
+        specs = tools.field_specs(scheme_ids)
+    specs.setdefault("income", {"type": "number"})
+    specs.setdefault("occupation", {"type": "str"})
+    for field, value in changes.items():
+        spec = specs.get(field)
+        if spec is None:
+            return False
+        kind = spec["type"]
+        if kind == "bool" and not isinstance(value, bool):
+            return False
+        if kind == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+            return False
+        if kind == "str" and not isinstance(value, str):
+            return False
+    return True
 
 
 def route_after_approval(state: GraphState) -> str:

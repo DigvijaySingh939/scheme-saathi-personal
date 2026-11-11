@@ -17,6 +17,7 @@ from typing import Any
 
 from fastmcp import Client
 
+from servers.rule_engine.ages import DOB_DERIVED
 from observability.hooks import record_approval, record_tool_call
 from servers.mock_portal.authorization import (
     CapabilityError,
@@ -41,7 +42,9 @@ _SERVERS = {
     DOC_CHECK: document_check_server,
 }
 DEFAULT_TOOL_CALL_BUDGET = 150  # one turn can evaluate every live scheme (50) twice, plus lookups
-_KNOWN_ACTORS = {"application", "baseline", "document_checker", "eligibility", "intake", "supervisor"}
+_KNOWN_ACTORS = {
+    "application", "baseline", "document_checker", "eligibility", "intake", "rule_reviewer", "supervisor"
+}
 
 # Pre-tool hook: only these agents may call a write tool. "baseline" is the single-agent
 # comparison run, which is deliberately given every tool.
@@ -50,6 +53,7 @@ READ_TOOLS = {
     (RULE_ENGINE, "get_rule_fields"),
     (RULE_ENGINE, "get_field_specs"),
     (RULE_ENGINE, "evaluate_profile"),
+    (RULE_ENGINE, "preview_profile"),
     (SCHEMES_KB, "search_schemes"),
     (SCHEMES_KB, "get_scheme_details"),
     (SCHEMES_KB, "get_required_documents"),
@@ -79,6 +83,12 @@ READ_ACCESS = {
         (RULE_ENGINE, "list_rule_schemes"),
         (RULE_ENGINE, "get_rule_fields"),
         (RULE_ENGINE, "get_field_specs"),
+    },
+    "rule_reviewer": {
+        (RULE_ENGINE, "list_rule_schemes"),
+        (RULE_ENGINE, "get_rule_fields"),
+        (RULE_ENGINE, "get_field_specs"),
+        (RULE_ENGINE, "preview_profile"),
     },
 }
 _actor: ContextVar[str | None] = ContextVar("tool_actor", default=None)
@@ -222,6 +232,8 @@ def _authorize(server: str, tool: str) -> None:
     if (server, tool) not in ALLOWED_TOOLS:
         raise ToolCallError(server, tool, "forbidden", f"'{server}.{tool}' is not an allow-listed tool.")
     actor = _actor.get()
+    if (server, tool) == (RULE_ENGINE, "preview_profile") and actor != "rule_reviewer":
+        raise ToolCallError(server, tool, "forbidden", "Only the rule reviewer may preview draft rules.")
     if actor is None:
         if (server, tool) in WRITE_TOOLS:
             raise ToolCallError(
@@ -370,8 +382,9 @@ def required_fields(scheme_ids: list[str] | None = None, include_draft: bool = F
 
 
 def evaluate_scheme(profile: dict, scheme_id: str, include_draft: bool = False) -> dict:
-    return call_tool(RULE_ENGINE, "evaluate_profile", profile=profile, scheme_id=scheme_id,
-                     include_draft=include_draft)
+    tool = "preview_profile" if include_draft else "evaluate_profile"
+    arguments = {"profile": profile, "scheme_id": scheme_id}
+    return call_tool(RULE_ENGINE, tool, **arguments)
 
 
 def field_specs(scheme_ids: list[str], include_draft: bool = False) -> dict[str, dict]:
@@ -384,11 +397,16 @@ def next_question(verdicts: dict[str, dict], declined: Collection[str] = ()) -> 
     ``verdicts`` maps scheme IDs to rule-engine evaluations, as the eligibility step writes them.
     Only cant_tell verdicts count: a decided scheme can't be changed by another answer.
     Ties go to the alphabetically first field, as the rule engine sorts unresolved fields.
+    Ages that need more than whole years (``DOB_DERIVED``) are asked as ``date_of_birth``;
+    if that was declined (many people don't know it), the age field itself is asked.
     """
+    ask_dob = "date_of_birth" not in declined
     counts: dict[str, int] = {}
     for evaluation in verdicts.values():
         if evaluation["verdict"] == "cant_tell":
-            for field in evaluation["unresolved_fields"]:
+            for field in dict.fromkeys(
+                "date_of_birth" if ask_dob and f in DOB_DERIVED else f for f in evaluation["unresolved_fields"]
+            ):
                 if field not in declined:
                     counts[field] = counts.get(field, 0) + 1
     return max(counts, key=counts.get, default=None)

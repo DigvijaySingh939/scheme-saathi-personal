@@ -1,6 +1,10 @@
 """Persona validator: ensures agents follow their instructions and respect contracts."""
 
+import re
+import unicodedata
 from typing import Any
+
+from observability.hooks import record_sensitive_id
 
 from agents.contracts import (
     SupervisorPlan,
@@ -269,12 +273,13 @@ class SchemaValidator:
 class SensitivePatternDetector:
     """Detects sensitive patterns in text."""
 
-    # Sensitive patterns
-    AADHAR_PATTERN = r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"
+    AADHAR_PATTERN = r"(?<!\d)\d{4}(?:[\s.\-]?\d{4}){2}(?!\d)"
     PAN_PATTERN = r"\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b"
     IFSC_PATTERN = r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
     BANK_ACCOUNT_PATTERN = r"\b\d{9,18}\b"
-    PHONE_PATTERN = r"\b[6-9]\d{9}\b"  # Indian phone numbers
+    PHONE_PATTERN = r"(?<!\d)(?:\+?91[\s().\-]*)?[6-9]\d{4}[\s().\-]*\d{5}(?!\d)"
+    OTP_PATTERN = r"\b(?:otp|one[- ]time(?: password| passcode)?|verification code)\s*(?:is|:|=)?\s*\d{4,8}\b"
+    PASSWORD_PATTERN = r"\b(?:password|passwd|passcode|pass phrase)\s*[:=]\s*\S+"
 
     @classmethod
     def detect_sensitive_type(cls, text: str) -> str | None:
@@ -283,21 +288,30 @@ class SensitivePatternDetector:
         Returns:
             Type of sensitive data found (aadhar, pan, bank_account, phone) or None
         """
-        import re
-
         if not isinstance(text, str):
             return None
 
-        if re.search(cls.AADHAR_PATTERN, text):
+        normalized = unicodedata.normalize("NFKC", text)
+        normalized = "".join(
+            str(unicodedata.digit(char)) if char.isdigit() else char
+            for char in normalized
+            if char not in "\u200b\u200c\u200d\u2060\ufeff"
+        )
+
+        if re.search(cls.AADHAR_PATTERN, normalized):
             return "aadhar"
-        if re.search(cls.PAN_PATTERN, text, re.IGNORECASE):
+        if re.search(cls.PAN_PATTERN, normalized, re.IGNORECASE):
             return "pan"
-        if re.search(cls.IFSC_PATTERN, text, re.IGNORECASE):
+        if re.search(cls.IFSC_PATTERN, normalized, re.IGNORECASE):
             return "ifsc"
-        if re.search(cls.BANK_ACCOUNT_PATTERN, text):
+        if re.search(cls.BANK_ACCOUNT_PATTERN, normalized):
             return "bank_account"
-        if re.search(cls.PHONE_PATTERN, text):
+        if re.search(cls.PHONE_PATTERN, normalized):
             return "phone"
+        if re.search(cls.OTP_PATTERN, normalized, re.IGNORECASE):
+            return "otp"
+        if re.search(cls.PASSWORD_PATTERN, normalized, re.IGNORECASE):
+            return "password"
         return None
 
 
@@ -365,6 +379,8 @@ def reject_sensitive_input(value: Any, field: str = "") -> None:
             reject_sensitive_input(item, field)
     elif value is not None and not isinstance(value, bool):
         normalized = field.lower().replace("-", "_").replace(" ", "_")
+        if normalized in {"hash", "payload_hash", "approved_hash", "form_hash"}:
+            return
         sensitive_field = any(
             name in normalized
             for name in (
@@ -375,10 +391,12 @@ def reject_sensitive_input(value: Any, field: str = "") -> None:
         financial_field = any(
             name in normalized for name in ("income", "amount", "salary", "price", "cost")
         )
-        if sensitive_field or (
+        id_type = "field" if sensitive_field else (
             (isinstance(value, str) or (isinstance(value, int) and not financial_field))
             and SensitivePatternDetector.detect_sensitive_type(str(value))
-        ):
+        )
+        if id_type:
+            record_sensitive_id("input", id_type)
             raise SensitiveInputError(SENSITIVE_INPUT_MESSAGE)
 
 

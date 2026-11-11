@@ -9,7 +9,9 @@ A welfare-scheme navigator for citizens and CSC operators. It identifies eligibl
 - `graph/` - LangGraph orchestration and checkpointing
 - `tests/` - unit and evaluation tests
 - `data/schemes/` - scheme corpus (URL and collection date recorded per scheme)
-- `docs/` - tool list, threat model, memory policy
+- `docs/` - tool list, threat model, memory policy, evaluation report and experiment log
+
+**Evaluation:** results of experiments E1–E4 are in [docs/evaluation-report.md](docs/evaluation-report.md), and every run behind them is listed in [docs/experiment-log.md](docs/experiment-log.md).
 
 ## Setup
 
@@ -379,6 +381,68 @@ which lists `openai/gpt-4o-mini` with hand-entered prices that you should confir
 price list (add a line for any other model, or point `MODEL_PRICES_FILE` at your own copy). A model that is
 not listed counts as unpriced, never as free. Only token counts and cost are
 recorded, never a prompt or a response.
+
+### Grafana dashboard
+
+Prometheus and Grafana run in Docker; the app runs on your machine. You need Docker Desktop running.
+
+**One-time setup**
+
+1. Make a token (any long random value):
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+2. Give the token to Prometheus. Save it, with nothing else, in `observability/deploy/secrets/metrics_token`
+   (git-ignored):
+   ```bash
+   # macOS / Linux
+   printf '%s' '<the token>' > observability/deploy/secrets/metrics_token
+   chmod 644 observability/deploy/secrets/metrics_token
+   ```
+   ```powershell
+   # Windows
+   Set-Content -NoNewline -Path observability\deploy\secrets\metrics_token -Value "<the token>"
+   ```
+3. Give the same token to the app. In the project's `.env`:
+   ```
+   OBSERVABILITY_ENABLED=true
+   METRICS_BEARER_TOKEN=<the same token>
+   ```
+4. Set the Grafana login. Copy `observability/deploy/.env.example` to `observability/deploy/.env` (git-ignored) and
+   set `GRAFANA_ADMIN_PASSWORD`. Never put the password in `.env.example`: that file is committed.
+5. Build the provisioned Grafana image from the project root:
+   ```powershell
+   docker build -f observability\deploy\grafana\Dockerfile -t scheme-saathi-grafana:local observability\deploy\grafana
+   ```
+
+**Every time**
+
+1. Start Prometheus and Grafana:
+   ```bash
+   cd observability/deploy
+   docker compose up -d
+   ```
+2. Start the app from the project root: `streamlit run app/app_new.py`. It starts the API on `127.0.0.1:8766`, which
+   Prometheus reads every 15 seconds.
+3. Open <http://localhost:3000>, log in with `GRAFANA_ADMIN_USER` (default `admin`) and your password, and open
+   **Dashboards > Scheme Saathi > Scheme Saathi**. Use the chat for a few turns; numbers appear within a minute.
+
+To stop: `docker compose down` in `observability/deploy` (the data is kept; add `-v` to delete it).
+
+**If something is wrong**
+
+| What you see | What to do |
+|---|---|
+| Every panel shows 0 or "No data" | Check <http://localhost:9090/targets>: the `scheme-saathi` job must be **UP**. If it is DOWN, the app is not running, `OBSERVABILITY_ENABLED` is not `true`, or the two tokens differ (401). Restart the app after changing `.env`. |
+| Target UP but panels still 0 | Nothing has happened yet in the selected time range. Chat for a few turns and pick **Last 15 minutes**. Lines on rate panels need a few minutes of data. |
+| Grafana rejects the password | Grafana keeps the password from its first start. After changing it in `observability/deploy/.env`, run `docker compose exec grafana grafana cli admin reset-admin-password '<new password>'`. |
+| `docker compose up` says to set `GRAFANA_ADMIN_PASSWORD` | `observability/deploy/.env` is missing or the password is empty (step 4). |
+| An alert shows as firing in the Health row | See the Alerts page at <http://localhost:9090/alerts>. `SchemeSaathiMetricsDown` just means the app is not running. |
+
+The dashboard file is `observability/deploy/grafana/provisioning/dashboards/json/scheme-saathi.json`. Grafana
+does not save edits to it; to change it, edit in Grafana, export the JSON (Share > Export > Save to file) and replace
+that file, then rebuild the Grafana image and redeploy. What each panel and metric means is in
+[docs/observability.md](docs/observability.md).
 
 ### Tracing (LangSmith)
 
@@ -783,6 +847,8 @@ Not wired in yet: operator access inside a citizen's household (it needs citizen
 
 - [Tool inventory](docs/tool-list.md) — current MCP tools, access types, and graph access checks.
 - [Threat model](docs/threat-model.md) — security boundaries, current controls, and deployment follow-ups.
+- [Evaluation report](docs/evaluation-report.md) — experiments E1–E4: setup, results, limits and how to reproduce them.
+- [Experiment log](docs/experiment-log.md) — every evaluation run, with its config, split, run folder and result.
 - [60-scheme review workbook](docs/Scheme-Saathi-60-Schemes-Schema-Review.xlsx) — manual review of scheme details and source information. Excel edits do not automatically update scheme JSON or ChromaDB.
 
 - [Scheme relationships](docs/scheme-data-relationships.md)
@@ -833,10 +899,10 @@ RAG scripts recognize synthetic:// rule fixtures and skip them without altering 
 The comparison runner supports vector, BM25 and hybrid using the same source-labelled dataset. The gold dataset is intentionally not included in this commit; supply your local reviewed dataset:
 
 ```bash
-python -m servers.schemes_kb.evaluate_retrieval --dataset "/path/to/retrieval_gold_v1.json" --method hybrid --split development --allow-pending
+python -m servers.schemes_kb.evaluate_retrieval --dataset "/path/to/retrieval_gold_v1.json" --method hybrid --split development
 ```
 
-Add `--rerank` to compare the same method with LLM reranking; the report filename and `rerank` field record it.
+Add `--rerank` to compare the same method with LLM reranking; the report filename and `rerank` field record it. Add `--rewrite` to also search an English, scheme-wording rewrite of each question (multi-query, fused with RRF); each case's `queries` field records both queries. Results so far, with dates, are in [docs/retrieval-evaluation.md](docs/retrieval-evaluation.md).
 
 --allow-pending explicitly permits provisional labels; omit it for approved labels. Keep held-out cases untouched until final evaluation. Reports are saved under ignored data/evaluation-runs/ and include evidence coverage, scheme hits, language breakdowns, filter checks, latency and corpus fingerprints. Abstention cases are marked unsupported; retrieval alone does not generate an answer. Evidence scoring requires source references plus normalized source text, not a matching citation alone. Tests use small synthetic examples and do not include the gold dataset.
 
@@ -946,6 +1012,52 @@ python -m servers.schemes_kb.import_schemes
 
 Omitting `--export-only` combines Excel conversion and the database import in one
 command. Export-only does not load the embedding model or open ChromaDB.
+
+## Rule extractor and Reflexion (signature challenge A)
+
+`agents/rule_extractor.py` turns a scheme's eligibility and exclusion sentences into draft JSON rules (field, operator, value, source clause, and `or_conditions` for one level of OR). Its output is always a draft, written only to the run folder; a person reviews rules before they go live, and only the rule engine decides eligibility.
+
+`evaluation/rule_extraction.py` scores each draft by code against the human-reviewed rules in `data/rules/` and names every error: missing or extra rule, wrong field, operator, value, alternatives (`or_conditions`), clause or `rule_logic`. Gold rules that cite a section the extractor never sees (Details, Benefits) are reported as out of section, not as misses. The extractor gets the shared field list (every field the reviewed rules use, with its type and values), so field names are scored exactly.
+
+Split (`tests/evaluation/rule_extraction_split.json`): development is the 34 AI-drafted schemes a person reviewed in Steps 4–6; held-out is the 15 hand-coded gold schemes, for the final evaluation only (`--final`).
+
+```bash
+python tests/evaluation/run_rule_extraction.py --config tests/evaluation/rule_extraction_configs/rx0_no_playbook.json --limit 3
+```
+
+```bash
+python tests/evaluation/run_rule_extraction.py --config tests/evaluation/rule_extraction_configs/rx0_no_playbook.json
+```
+
+It needs `SPECIALIST_MODEL` and `OPENROUTER_API_KEY` in `.env`, prints one line per scheme, and writes `schemes.jsonl` (each draft, its score and errors) and `summary.json` (exact-scheme and exact-rule rates, condition precision/recall/F1, errors by type, tokens, latency) to `data/evaluation-runs/`. `rx0_no_playbook` is the baseline: no lessons. A config's optional `model` runs the extractor on that model for that run only (`*_gpt41mini` configs use `openai/gpt-4.1-mini`, the brief's recommended specialist model); compare configs only when they use the same model.
+
+**The Reflexion loop.** After a development run, the reflection step (`agents/rule_reflector.py`) sees each type of error with examples from several schemes and proposes at most three short lessons per type, each saying when it applies:
+
+```bash
+python tests/evaluation/reflect_rule_extraction.py --run data/evaluation-runs/<development run folder>
+```
+
+The reflection model is `REFLECTION_MODEL` if set (a stronger model is cheap here: one call per error type), else `SUPERVISOR_MODEL`. Code removes keywords too common to tell schemes apart and flags lessons with no specific keyword or only one source scheme; `--discard-proposed` drops unreviewed proposals before reflecting again. Proposed lessons are added to `data/playbook/rule_extractor.json` with status `proposed`, and the reflection tokens are written to the run's `reflection.json` (the cost of generating lessons, for E3). A person approves, edits or rejects each one (`python tests/evaluation/review_lessons.py --decisions <file> --reviewer <name>` applies a decisions file and refuses one that misses a proposal); only approved lessons are loaded into the LangGraph store (namespace `playbook/rule_extractor`), and any lesson can be withdrawn. `rx1_playbook` gives the extractor the approved lessons relevant to each scheme: a lesson's keywords must appear in the scheme's text (a lesson without keywords always applies), top 5. Before the held-out run the playbook is frozen: every lesson must be reviewed, the approved ones get a version hash, and a `--final` run refuses a playbook that isn't frozen or changed since. Reflection refuses held-out runs, so lessons are learned on development schemes only.
+
+**Freeze and E3.** When the lessons are final, freeze the playbook (every lesson must be reviewed; it records who froze it, when, and a version hash), commit it, then run the held-out schemes three times without and three times with it, on the same model, and compare:
+
+```bash
+python tests/evaluation/freeze_playbook.py --by <name>
+```
+
+```bash
+python tests/evaluation/run_rule_extraction.py --config tests/evaluation/rule_extraction_configs/rx0_no_playbook_gpt41mini.json --split held_out --final
+```
+
+```bash
+python tests/evaluation/run_rule_extraction.py --config tests/evaluation/rule_extraction_configs/rx1_playbook_gpt41mini.json --split held_out --final
+```
+
+```bash
+python tests/evaluation/e3_report.py --before <3 run folders> --after <3 run folders> --reflection <development run>/reflection.json
+```
+
+Each run records the playbook version it used. The report refuses runs that aren't held-out, mix models, use lessons on the "before" side or use different or unfrozen playbooks on the "after" side. It writes `e3_report.md` and `e3_report.json`: each measure's mean and range over runs and whether the change is beyond the run-to-run spread, errors by type, per-scheme results with the lessons each scheme received, lessons that reached a scheme that got worse, and the cost of generating the lessons.
 
 ## Single-agent baseline (L11)
 

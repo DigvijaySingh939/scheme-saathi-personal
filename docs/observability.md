@@ -3,7 +3,7 @@
 Scheme Saathi records, for every run, what it cost, how long it took, whether it failed and how it ended.
 Prometheus scrapes the numbers from the API's `/metrics`, Grafana reads them from Prometheus, and
 LangSmith holds one trace per run. This page covers setup, every metric, and queries ready for panels.
-No dashboards are shipped: the data is here so they can be built.
+One dashboard, **Scheme Saathi**, is provisioned with Grafana (see [Dashboard](#dashboard)).
 
 Nothing is recorded unless `OBSERVABILITY_ENABLED=true`. For how the pieces fit together and what is and is not
 traced, see [observability-architecture.md](./observability-architecture.md).
@@ -53,7 +53,11 @@ hash of its thread ID. No scheme label is put on verdicts.
    On Linux also run `chmod 644` on it, because Prometheus runs as an unprivileged user inside its container.
 
 3. **Compose settings.** Copy `observability/deploy/.env.example` to `observability/deploy/.env` and set
-   `GRAFANA_ADMIN_PASSWORD`. Compose refuses to start without it.
+   `GRAFANA_ADMIN_PASSWORD`. Compose refuses to start without it. Build the Grafana image with the provisioned
+   dashboard and data source from the repository root:
+   ```powershell
+   docker build -f observability\deploy\grafana\Dockerfile -t scheme-saathi-grafana:local observability\deploy\grafana
+   ```
 
 4. **Start the stack** from `observability/deploy/`:
    ```powershell
@@ -73,9 +77,28 @@ hash of its thread ID. No scheme label is put on verdicts.
 set `SCHEME_SAATHI_CHAT_API_HOST=0.0.0.0` for it, put it on the same Docker network as Prometheus, and change
 the `targets` entry in `prometheus/prometheus.yml` to that container's name and port. This path is untested.
 
+**Continuous deployment.** On pushes to `main`, the `production` GitHub Environment publishes the custom Grafana image
+to `<DOCKERHUB_REPOSITORY>-grafana` and deploys Prometheus and Grafana on the
+`[self-hosted, linux, x64, scheme-saathi-deploy]` runner. Configure the `DOCKERHUB_USERNAME`,
+`DOCKERHUB_TOKEN`, `DOCKERHUB_PULL_TOKEN`, `GRAFANA_ADMIN_PASSWORD`, and `METRICS_BEARER_TOKEN` environment secrets,
+and set `DOCKERHUB_REPOSITORY` (the application image, in `namespace/image` format). The runner needs Docker Compose,
+`curl`, and permission to run Docker. The stack and token file are kept under the runner user's
+`~/.scheme-saathi/observability`; the Docker volumes preserve Grafana and Prometheus data between deploys. The app
+must separately be configured with the same metrics token and expose its API on the Prometheus target
+`host.docker.internal:8766` for the dashboard to contain app metrics.
+Grafana and Prometheus bind to the EC2 loopback interface; use an SSH tunnel or a secured reverse proxy for remote access
+instead of opening ports 3000 or 9090 to the internet.
+
 **Prometheus rules.** `prometheus/rules.yml` holds recording rules (named `scheme_saathi:<what>:<how>`) so
 panels stay short; they are listed below. `prometheus/alerts.yml` holds alert rules with starting thresholds. They
 show on Prometheus's Alerts page; Alertmanager is not set up, so nothing is sent.
+`SchemeSaathiCantTellRateJump` is the brief's operations alert: it fires when the last hour's can't-tell share
+is over 20%, at least double the last day's, and based on 20 or more verdicts. To see it fire in a demo, run 20+
+personas whose profiles leave verdicts open within an hour.
+
+**Series that start at 0.** Prometheus's `rate()` and `increase()` miss the first increment of a series it never saw
+at 0. So the app creates the series that alerts and ratios read (server-side error outcomes per run kind, each
+verdict, each trace result, each guardrail stage) at 0 when observability starts.
 
 ## Metrics
 
@@ -126,6 +149,9 @@ and `_count`. Latencies are in seconds and cost is in US dollars. The app also e
 | `scheme_saathi_eligibility_verdicts_total` | verdict | Final `eligible`, `not_eligible`, `cant_tell`, one per scheme checked, counted when a check settles. |
 | `scheme_saathi_approvals_total` | action, result | Approval decisions on an application form. |
 | `scheme_saathi_guardrail_blocks_total` | stage | Input or output the guardrails stopped. |
+| `scheme_saathi_sensitive_ids_detected_total` | stage, id_type | ID numbers refused in input or removed from output, by type (`aadhar`, `pan`, `ifsc`, `bank_account`, `phone`, `otp`, `password`, or `field` for a field named like an ID). Never the value. |
+| `scheme_saathi_conversations_started_total` | none | Chat conversations that got their first turn. A conversation resumed after an app restart counts again. |
+| `scheme_saathi_approvals_waiting` | none | Drafts shown for approval and not yet approved, rejected or expired (24 hours). Kept in memory, so it restarts at 0 with the app. |
 | `scheme_saathi_memory_operations_total` | operation, result | Memory load, save, reference, consent and forget. |
 | `scheme_saathi_threads_expired_total` | kind, reason | Threads and chat sessions that expired (`cleanup` or `on_use`). |
 
@@ -161,6 +187,7 @@ Use these for panels; they are in `prometheus/rules.yml`.
 | `scheme_saathi:tool_call_duration_seconds:p95_5m` | server, tool | Tool latency. |
 | `scheme_saathi:http_requests:error_ratio_rate5m` | route | Share of requests that were 5xx. |
 | `scheme_saathi:http_request_duration_seconds:p95_5m` | route | Request latency. |
+| `scheme_saathi:eligibility_verdicts:cant_tell_ratio_rate1h`, `:cant_tell_ratio_rate1d` | none | Share of verdicts that were can't tell. |
 | `scheme_saathi:traces:lost_ratio_rate5m` | none | Share of traces that were dropped or failed. |
 
 ## Queries for panels
@@ -210,12 +237,30 @@ up{job="scheme-saathi"}
 scheme_saathi_build_info
 ```
 
+## Dashboard
+
+`grafana/provisioning/dashboards/json/scheme-saathi.json` is loaded at start-up into the **Scheme Saathi** folder.
+It has six rows:
+
+- **Scheme Saathi**: the brief's operations numbers. Questions per conversation (chat turns ending
+  `needs_information`, one question per turn, divided by conversations started), the can't-tell rate and the two
+  series its alert compares, waiting approvals, masked-ID hits by type, and cost per conversation (all priced model
+  spend divided by conversations started).
+- **Cost**, **Latency**, **Errors**, **Outcomes**: the queries above.
+- **Health**: whether Prometheus can scrape the app, load, traces lost, and a table of SchemeSaathi alerts pending or
+  firing now.
+
+Grafana does not save edits to a provisioned dashboard. To change it, edit in Grafana, export it (Share > Export >
+Save to file, leaving "Export for sharing externally" off) and replace the JSON file.
+
 ## Traces (LangSmith)
 
 See the README section "Tracing (LangSmith)". `TRACING_BACKEND=langsmith` with `LANGSMITH_API_KEY` sends one
 trace per run to LangSmith: a root span per run and a child span per model and tool call. The metrics above
 and the traces share the same `kind`, `outcome`, model, token and cost values, so a number on a
-dashboard can be traced to the runs behind it. Traces are metadata only; leave `LANGSMITH_TRACING` and
+dashboard can be traced to the runs behind it. Traces are sent one run at a time from the app's own exporter thread (LangSmith's batching is off), so a trace
+LangSmith rejects, for example for a wrong API key, is counted as `failed` and shows in the `SchemeSaathiTracesLost`
+alert. Traces are metadata only; leave `LANGSMITH_TRACING` and
 `LANGCHAIN_TRACING_V2` unset.
 
 ## Hardening
